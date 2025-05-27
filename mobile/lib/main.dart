@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:qr_code_scanner/qr_code_scanner.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+
 import 'dart:io';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -32,28 +33,29 @@ class SyncHomePage extends StatefulWidget {
   _SyncHomePageState createState() => _SyncHomePageState();
 }
 
-class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMixin {
+class _SyncHomePageState extends State<SyncHomePage>
+    with TickerProviderStateMixin {
   // Connection variables
   Socket? _socket;
   bool _isConnected = false;
   String _connectionStatus = "Not Connected";
   String _connectedDevice = "";
-  
+
   // UI controllers
   late TabController _tabController;
   final GlobalKey qrKey = GlobalKey(debugLabel: 'QR');
-  QRViewController? qrController;
-  
+  final MobileScannerController qrController = MobileScannerController();
+
   // Settings
   String _syncFolder = "";
   bool _autoAcceptFiles = false;
   bool _clipboardSync = true;
-  
+
   // File transfer
   double _transferProgress = 0.0;
   String _transferStatus = "";
   List<FileInfo> _syncFiles = [];
-  
+
   // Clipboard monitoring
   Timer? _clipboardTimer;
   String _lastClipboard = "";
@@ -70,33 +72,32 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
   @override
   void dispose() {
     _tabController.dispose();
-    qrController?.dispose();
+    qrController.dispose();
     _socket?.close();
     _clipboardTimer?.cancel();
     super.dispose();
   }
 
   Future<void> _requestPermissions() async {
-    await [
-      Permission.camera,
-      Permission.storage,
-    ].request();
+    await [Permission.camera, Permission.storage].request();
   }
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _syncFolder = prefs.getString('sync_folder') ?? '/storage/emulated/0/Download/sync-files';
+      _syncFolder =
+          prefs.getString('sync_folder') ??
+          '/storage/emulated/0/Download/sync-files';
       _autoAcceptFiles = prefs.getBool('auto_accept_files') ?? false;
       _clipboardSync = prefs.getBool('clipboard_sync') ?? true;
     });
-    
+
     // Create sync folder if it doesn't exist
     final directory = Directory(_syncFolder);
     if (!await directory.exists()) {
       await directory.create(recursive: true);
     }
-    
+
     await _refreshFileList();
   }
 
@@ -113,30 +114,15 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
         try {
           ClipboardData? data = await Clipboard.getData('text/plain');
           String currentClipboard = data?.text ?? '';
-          
-          if (currentClipboard.isNotEmpty && currentClipboard != _lastClipboard) {
+
+          if (currentClipboard.isNotEmpty &&
+              currentClipboard != _lastClipboard) {
             _lastClipboard = currentClipboard;
-            _sendMessage({
-              'type': 'clipboard',
-              'data': currentClipboard,
-            });
+            _sendMessage({'type': 'clipboard', 'data': currentClipboard});
           }
         } catch (e) {
           print('Clipboard monitoring error: $e');
         }
-      }
-    });
-  }
-
-  void _onQRViewCreated(QRViewController controller) {
-    setState(() {
-      qrController = controller;
-    });
-    
-    controller.scannedDataStream.listen((scanData) async {
-      if (scanData.code != null) {
-        await _connectToDesktop(scanData.code!);
-        controller.pauseCamera();
       }
     });
   }
@@ -147,23 +133,23 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
       final ip = connectionInfo['ip'];
       final port = connectionInfo['port'];
       final deviceName = connectionInfo['device_name'] ?? 'Desktop';
-      
+
       _socket = await Socket.connect(ip, port);
-      
+
       // Send device info
       final deviceInfo = {
         'device_name': 'Mobile Device',
         'platform': Platform.operatingSystem,
       };
-      
+
       _socket!.write(json.encode(deviceInfo));
-      
+
       setState(() {
         _isConnected = true;
         _connectionStatus = "Connected";
         _connectedDevice = deviceName;
       });
-      
+
       // Listen for messages
       _socket!.listen(
         _handleIncomingData,
@@ -176,15 +162,14 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
           _disconnect();
         },
       );
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Connected to $deviceName')),
-      );
-      
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Connected to $deviceName')));
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Connection failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Connection failed: $e')));
     }
   }
 
@@ -192,9 +177,13 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
     try {
       // Handle length-prefixed messages
       if (data.length < 4) return;
-      
-      final messageLength = ByteData.sublistView(data, 0, 4).getUint32(0, Endian.big);
-      
+
+      final messageLength = ByteData.sublistView(
+        data,
+        0,
+        4,
+      ).getUint32(0, Endian.big);
+
       if (data.length >= 4 + messageLength) {
         final messageData = data.sublist(4, 4 + messageLength);
         final message = json.decode(utf8.decode(messageData));
@@ -207,7 +196,7 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
 
   void _processMessage(Map<String, dynamic> message) {
     final type = message['type'];
-    
+
     switch (type) {
       case 'clipboard':
         if (_clipboardSync) {
@@ -217,11 +206,11 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
           );
         }
         break;
-        
+
       case 'file':
         _receiveFile(message);
         break;
-        
+
       case 'clipboard_request':
         _sendClipboard();
         break;
@@ -234,7 +223,7 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
         final messageData = utf8.encode(json.encode(message));
         final lengthData = ByteData(4);
         lengthData.setUint32(0, messageData.length, Endian.big);
-        
+
         _socket!.add(lengthData.buffer.asUint8List());
         _socket!.add(messageData);
       } catch (e) {
@@ -249,7 +238,7 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
       _connectionStatus = "Not Connected";
       _connectedDevice = "";
     });
-    
+
     _socket?.close();
     _socket = null;
   }
@@ -258,18 +247,15 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
     try {
       ClipboardData? data = await Clipboard.getData('text/plain');
       if (data?.text != null) {
-        await _sendMessage({
-          'type': 'clipboard',
-          'data': data!.text,
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Clipboard sent to desktop')),
-        );
+        await _sendMessage({'type': 'clipboard', 'data': data!.text});
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Clipboard sent to desktop')));
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to send clipboard: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to send clipboard: $e')));
     }
   }
 
@@ -280,46 +266,45 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
   Future<void> _sendFile() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles();
-      
+
       if (result != null && result.files.single.path != null) {
         final file = File(result.files.single.path!);
         final fileName = result.files.single.name;
         final fileSize = await file.length();
-        
+
         setState(() {
           _transferStatus = "Sending $fileName...";
           _transferProgress = 0.0;
         });
-        
+
         final fileBytes = await file.readAsBytes();
         final fileData = base64Encode(fileBytes);
-        
+
         final message = {
           'type': 'file',
           'name': fileName,
           'size': fileSize,
           'data': fileData,
         };
-        
+
         await _sendMessage(message);
-        
+
         setState(() {
           _transferStatus = "Sent $fileName";
           _transferProgress = 1.0;
         });
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('File sent successfully')),
-        );
-        
+
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('File sent successfully')));
       }
     } catch (e) {
       setState(() {
         _transferStatus = "Failed to send file";
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to send file: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to send file: $e')));
     }
   }
 
@@ -327,10 +312,10 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
     try {
       final fileName = message['name'];
       final fileData = base64Decode(message['data']);
-      
+
       // Save to sync folder
       String filePath = '$_syncFolder/$fileName';
-      
+
       // Handle duplicate names
       int counter = 1;
       String originalPath = filePath;
@@ -345,20 +330,19 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
         }
         counter++;
       }
-      
+
       final file = File(filePath);
       await file.writeAsBytes(fileData);
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Received: ${file.path.split('/').last}')),
       );
-      
+
       await _refreshFileList();
-      
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to receive file: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to receive file: $e')));
     }
   }
 
@@ -367,12 +351,13 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
       final directory = Directory(_syncFolder);
       if (await directory.exists()) {
         final files = await directory.list().toList();
-        
+
         setState(() {
-          _syncFiles = files
-              .where((file) => file is File)
-              .map((file) => FileInfo.fromFile(file as File))
-              .toList();
+          _syncFiles =
+              files
+                  .where((file) => file is File)
+                  .map((file) => FileInfo.fromFile(file as File))
+                  .toList();
         });
       }
     } catch (e) {
@@ -438,9 +423,11 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
                       ElevatedButton(
-                        onPressed: _isConnected ? null : () => qrController?.resumeCamera(),
+                        onPressed:
+                            _isConnected ? null : () => qrController.start(),
                         child: Text('Scan QR'),
                       ),
+
                       ElevatedButton(
                         onPressed: _isConnected ? _disconnect : null,
                         child: Text('Disconnect'),
@@ -456,21 +443,26 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
             ),
           ),
         ),
-        
+
         // QR Scanner
         Expanded(
           child: Container(
             margin: EdgeInsets.all(16),
             child: Card(
-              child: QRView(
-                key: qrKey,
-                onQRViewCreated: _onQRViewCreated,
-                overlay: QrScannerOverlayShape(
-                  borderColor: Colors.blue,
-                  borderRadius: 10,
-                  borderLength: 30,
-                  borderWidth: 10,
-                  cutOutSize: 300,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: MobileScanner(
+                  controller: qrController,
+                  onDetect: (BarcodeCapture capture) async {
+                    for (final barcode in capture.barcodes) {
+                      final code = barcode.rawValue;
+                      if (code != null) {
+                        await _connectToDesktop(code);
+                        qrController.stop();
+                        break;
+                      }
+                    }
+                  },
                 ),
               ),
             ),
@@ -498,7 +490,9 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
                   SizedBox(height: 16),
                   SwitchListTile(
                     title: Text('Auto Sync Clipboard'),
-                    subtitle: Text('Automatically sync clipboard between devices'),
+                    subtitle: Text(
+                      'Automatically sync clipboard between devices',
+                    ),
                     value: _clipboardSync,
                     onChanged: (value) {
                       setState(() {
@@ -567,9 +561,9 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
               ),
             ),
           ),
-          
+
           SizedBox(height: 16),
-          
+
           // File List
           Expanded(
             child: Card(
@@ -599,7 +593,9 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
                         return ListTile(
                           leading: Icon(Icons.insert_drive_file),
                           title: Text(file.name),
-                          subtitle: Text('${file.sizeString} • ${file.modifiedString}'),
+                          subtitle: Text(
+                            '${file.sizeString} • ${file.modifiedString}',
+                          ),
                           onTap: () {
                             // Could add file preview/open functionality here
                           },
@@ -639,7 +635,8 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
                       border: OutlineInputBorder(),
                       suffixIcon: IconButton(
                         onPressed: () async {
-                          String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
+                          String? selectedDirectory =
+                              await FilePicker.platform.getDirectoryPath();
                           if (selectedDirectory != null) {
                             setState(() {
                               _syncFolder = selectedDirectory;
@@ -659,9 +656,9 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
               ),
             ),
           ),
-          
+
           SizedBox(height: 16),
-          
+
           Card(
             child: Padding(
               padding: EdgeInsets.all(16),
@@ -687,9 +684,9 @@ class _SyncHomePageState extends State<SyncHomePage> with TickerProviderStateMix
               ),
             ),
           ),
-          
+
           SizedBox(height: 16),
-          
+
           Card(
             child: Padding(
               padding: EdgeInsets.all(16),
@@ -751,7 +748,8 @@ class FileInfo {
   String get sizeString {
     if (size < 1024) return '$size B';
     if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(1)} KB';
-    if (size < 1024 * 1024 * 1024) return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (size < 1024 * 1024 * 1024)
+      return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
     return '${(size / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 
